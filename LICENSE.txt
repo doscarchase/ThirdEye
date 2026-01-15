@@ -1,4 +1,16 @@
+PROPRIETARY AND CONFIDENTIAL LICENSE
+
 Copyright (c) 2026 Devon Chase. All rights reserved.
 
-This source code and all associated files are the confidential and proprietary property of Devon Chase.
-Unauthorized copying, modification, distribution, or use of this file via any medium is strictly prohibited.
+1. OWNERSHIP: All software, source code, neural network architectures, model weights, and documentation (collectively, the "Software") within this repository are the exclusive property of Devon Chase.
+
+2. RESTRICTIONS: Unauthorized copying, modification, distribution, or use of the Software, via any medium, is strictly prohibited. This includes, but is not limited to:
+   a) Reverse engineering, decompiling, or attempting to extract AI model weights.
+   b) Using the Software to train competing machine learning models.
+   c) Sublicensing or reselling any portion of the Software.
+
+3. NO WARRANTY: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+4. TRADE SECRETS: The Software contains trade secrets and proprietary information. Access to this repository does not grant any license to use the Software for commercial or personal purposes unless governed by a separate, written Commercial Agreement.
+
+For licensing inquiries, contact: [Your Email Address]
