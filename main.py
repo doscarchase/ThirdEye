@@ -146,15 +146,31 @@ class ThirdEyeApp(ctk.CTk):
             self.destroy()
 
     def _scan_cameras(self):
-        """Detect available cameras (0 to 5)."""
+        """Detect available cameras and map them to real names."""
         self.available_cameras = {}
-        for i in range(5):
+        
+        # 1. Get real names from OS
+        real_names = self._get_platform_camera_names()
+        
+        # 2. Check OpenCV indices (0-5)
+        for i in range(6):
             cap = cv2.VideoCapture(i)
             if cap.isOpened():
                 ret, _ = cap.read()
                 if ret:
-                    self.available_cameras[f"Camera Source {i}"] = i
+                    # Try to match index to a real name
+                    if i < len(real_names):
+                        display_name = f"{real_names[i]} ({i})"
+                    else:
+                        display_name = f"Camera Source {i}"
+                        
+                    self.available_cameras[display_name] = i
                 cap.release()
+            else:
+                # If we hit a closed index and we already found some, we can usually stop 
+                # (though some setups have gaps, checking up to 5 is safe)
+                pass
+
         if not self.available_cameras:
             self.available_cameras["No Camera Found"] = -1
 
@@ -250,15 +266,44 @@ class ThirdEyeApp(ctk.CTk):
             self._create_grid_card(self.scroll, name, desc, img_path, i // 2, i % 2)
 
     def _on_mouse_wheel(self, event):
-        # Unbind if not in library to avoid conflict, or handle safely
         try:
+            # Check OS for scroll direction and scaling
             if sys.platform == "linux":
                 scroll_dir = -1 if event.num == 5 else 1
                 self.scroll._parent_canvas.yview_scroll(int(scroll_dir), "units")
             else:
-                self.scroll._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        except:
+                # Windows/Mac: Divide by 120 for standard scaling
+                self.scroll._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
             pass
+    def _get_platform_camera_names(self):
+        """Attempts to fetch real camera names using OS commands."""
+        names = []
+        import subprocess
+        
+        try:
+            if os.name == 'nt': # Windows
+                # Use PowerShell to get PnP devices that look like cameras
+                cmd = "Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Image' -or $_.PNPClass -eq 'Camera' } | Select-Object -ExpandProperty Caption"
+                result = subprocess.run(["powershell", "-Command", cmd], capture_output=True, text=True)
+                if result.returncode == 0:
+                    names = [line.strip() for line in result.stdout.split('\n') if line.strip()]
+                    
+            elif sys.platform.startswith("linux"): # Linux
+                # Check /sys/class/video4linux
+                v4l_path = Path("/sys/class/video4linux")
+                if v4l_path.exists():
+                    # Sort by name (video0, video1...) to match OpenCV indices
+                    video_devs = sorted([p for p in v4l_path.iterdir() if p.name.startswith("video")], 
+                                      key=lambda x: int(x.name.replace("video", "")))
+                    for dev in video_devs:
+                        name_file = dev / "name"
+                        if name_file.exists():
+                            names.append(name_file.read_text().strip())
+        except Exception as e:
+            print(f"Name fetch error: {e}")
+            
+        return names
 
     def _create_grid_card(self, parent, name, desc, img_path, r, c):
         card = ctk.CTkFrame(parent, corner_radius=15, border_width=1, border_color="#333333")
@@ -287,6 +332,16 @@ class ThirdEyeApp(ctk.CTk):
         btn = ctk.CTkButton(card, text=btn_text, fg_color=btn_color,
                             command=lambda n=name: self._activate_and_switch(n))
         btn.pack(pady=(0, 20))
+
+        # --- FIX: Recursively bind mouse wheel to all card elements ---
+        # This ensures scrolling works even when hovering over a card/image/text
+        def bind_scroll(widget):
+            widget.bind("<MouseWheel>", self._on_mouse_wheel)  # Windows
+            widget.bind("<Button-4>", self._on_mouse_wheel)    # Linux Up
+            widget.bind("<Button-5>", self._on_mouse_wheel)    # Linux Down
+            
+        for widget in [card, img_label, title, description]:
+            bind_scroll(widget)
 
     def _activate_and_switch(self, model_name):
         self.active_model_name = model_name
