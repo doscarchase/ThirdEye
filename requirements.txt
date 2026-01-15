@@ -1,0 +1,12 @@
+customtkinter
+opencv-python
+ultralytics
+cryptography
+deepface
+pandas
+numpy
+# For Mac users (CPU/Metal acceleration)
+onnxruntime; sys_platform == 'darwin'
+# For Windows/Linux users (NVIDIA GPU acceleration)
+onnxruntime-gpu; sys_platform == 'win32' or sys_platform == 'linux'
+nuitka
