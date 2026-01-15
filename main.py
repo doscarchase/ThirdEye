@@ -73,10 +73,16 @@ class ThirdEyeApp(ctk.CTk):
         # 1. Hide Main Window Initially
         self.withdraw()
         
-        # 2. Setup Basic Window Properties (so it's ready when shown)
+        # 2. Setup Basic Window Properties
         self.title("ThirdEye AI Suite")
         self.geometry("1200x800")
         self.base_path = Path(__file__).parent / "assets"
+        
+        # State Management
+        self.active_model_name = None  # None means raw feed
+        self.available_cameras = {}    # { "Camera 0": 0, ... }
+        self.selected_camera_idx = 0
+        self.latest_frame_image = None # Thread-safe frame transfer
         
         # Icon Setup
         try:
@@ -93,7 +99,7 @@ class ThirdEyeApp(ctk.CTk):
         # 3. Launch Splash Screen
         self.splash = SplashScreen(self)
         
-        # 4. Start Loading Thread (Heavy lifting happens here)
+        # 4. Start Loading Thread
         threading.Thread(target=self._load_resources, daemon=True).start()
 
     def _load_resources(self):
@@ -104,29 +110,29 @@ class ThirdEyeApp(ctk.CTk):
             global HardwareGuard
             from security_core import HardwareGuard
             self.guard = HardwareGuard()
-            time.sleep(0.3) # Artificial delay for UX smoothness
+            time.sleep(0.3) 
 
             # -- STAGE 2: AI Libraries --
             self.splash.update_progress(0.3, "Loading Neural Engine (OpenCV)...")
             global cv2
             import cv2
             
-            self.splash.update_progress(0.4, "Shaking The Robots Awake...")
-            # Pre-load any images if necessary here
-            time.sleep(1.4)
+            self.splash.update_progress(0.4, "Scanning Optical Sensors...")
+            self._scan_cameras()
+            time.sleep(0.5)
 
             self.splash.update_progress(0.5, "Initializing Recognition Models...")
             global FaceEngine
             from recognition_engine import FaceEngine
+            # Initialize engine once here to avoid lag later
+            self.face_engine = FaceEngine(db_path="assets/known_faces")
             
             # -- STAGE 3: UI Assets --
             self.splash.update_progress(0.8, "Loading Interface Assets...")
-            # Pre-load any images if necessary here
             time.sleep(0.2)
 
             self.splash.update_progress(0.9, "Petting Soft Kitties...")
-            # Pre-load any images if necessary here
-            time.sleep(1.2)
+            time.sleep(0.8)
 
             # -- FINISH --
             self.splash.update_progress(1.0, "Ready!")
@@ -138,6 +144,19 @@ class ThirdEyeApp(ctk.CTk):
         except Exception as e:
             print(f"Critical Startup Error: {e}")
             self.destroy()
+
+    def _scan_cameras(self):
+        """Detect available cameras (0 to 5)."""
+        self.available_cameras = {}
+        for i in range(5):
+            cap = cv2.VideoCapture(i)
+            if cap.isOpened():
+                ret, _ = cap.read()
+                if ret:
+                    self.available_cameras[f"Camera Source {i}"] = i
+                cap.release()
+        if not self.available_cameras:
+            self.available_cameras["No Camera Found"] = -1
 
     def _finalize_startup(self):
         """Called when loading is done. Builds UI and shows window."""
@@ -158,7 +177,7 @@ class ThirdEyeApp(ctk.CTk):
         self.attributes('-topmost',True)
         self.after_idle(self.attributes,'-topmost',False)
 
-    # --- UI SETUP METHODS (Same as before) ---
+    # --- UI SETUP METHODS ---
     def _setup_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
@@ -192,17 +211,27 @@ class ThirdEyeApp(ctk.CTk):
         self.main_frame = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         self.main_frame.grid(row=0, column=1, sticky="nsew")
 
+    # --- LIBRARY TAB ---
     def show_library(self):
         self._stop_camera()
         self._clear_main()
         
-        header = ctk.CTkLabel(self.main_frame, text="Intelligence Library", font=ctk.CTkFont(size=22, weight="bold"))
-        header.pack(pady=20, padx=30, anchor="w")
+        header_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        header_frame.pack(fill="x", padx=30, pady=20)
         
-        scroll = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=20, pady=10)
-        scroll.grid_columnconfigure(0, weight=1)
-        scroll.grid_columnconfigure(1, weight=1)
+        header = ctk.CTkLabel(header_frame, text="Intelligence Library", font=ctk.CTkFont(size=22, weight="bold"))
+        header.pack(side="left")
+
+        # Scrollable Frame
+        self.scroll = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent")
+        self.scroll.pack(fill="both", expand=True, padx=20, pady=10)
+        self.scroll.grid_columnconfigure(0, weight=1)
+        self.scroll.grid_columnconfigure(1, weight=1)
+        
+        # Mouse Wheel Scrolling Binding
+        self.scroll.bind_all("<MouseWheel>", self._on_mouse_wheel)  # Windows
+        self.scroll.bind_all("<Button-4>", self._on_mouse_wheel)    # Linux Up
+        self.scroll.bind_all("<Button-5>", self._on_mouse_wheel)    # Linux Down
 
         models = [
             ("Sentry Mode", "Perimeter human detection.", "assets/img_sentry.png"),
@@ -218,7 +247,18 @@ class ThirdEyeApp(ctk.CTk):
         ]
         
         for i, (name, desc, img_path) in enumerate(models):
-            self._create_grid_card(scroll, name, desc, img_path, i // 2, i % 2)
+            self._create_grid_card(self.scroll, name, desc, img_path, i // 2, i % 2)
+
+    def _on_mouse_wheel(self, event):
+        # Unbind if not in library to avoid conflict, or handle safely
+        try:
+            if sys.platform == "linux":
+                scroll_dir = -1 if event.num == 5 else 1
+                self.scroll._parent_canvas.yview_scroll(int(scroll_dir), "units")
+            else:
+                self.scroll._parent_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        except:
+            pass
 
     def _create_grid_card(self, parent, name, desc, img_path, r, c):
         card = ctk.CTkFrame(parent, corner_radius=15, border_width=1, border_color="#333333")
@@ -232,53 +272,139 @@ class ThirdEyeApp(ctk.CTk):
 
         img_label = ctk.CTkLabel(card, text="", image=model_img)
         img_label.pack(pady=(15, 10))
+        
         title = ctk.CTkLabel(card, text=name, font=ctk.CTkFont(size=18, weight="bold"))
         title.pack(anchor="center")
+        
         description = ctk.CTkLabel(card, text=desc, text_color="gray")
-        description.pack(anchor="center", pady=(0, 15))
+        description.pack(anchor="center", pady=(0, 10))
 
+        # Activate Button
+        is_active = (self.active_model_name == name)
+        btn_text = "Active" if is_active else "Activate Model"
+        btn_color = "green" if is_active else ["#3B8ED0", "#1F6AA5"]
+        
+        btn = ctk.CTkButton(card, text=btn_text, fg_color=btn_color,
+                            command=lambda n=name: self._activate_and_switch(n))
+        btn.pack(pady=(0, 20))
+
+    def _activate_and_switch(self, model_name):
+        self.active_model_name = model_name
+        self.show_live_vision()
+
+    # --- LIVE VISION TAB ---
     def show_live_vision(self):
         self._stop_camera()
         self._clear_main()
+        # Unbind scroll when leaving library
+        self.unbind_all("<MouseWheel>") 
         
-        self.video_label = ctk.CTkLabel(self.main_frame, text="")
-        self.video_label.pack(pady=10)
+        # Control Bar
+        controls = ctk.CTkFrame(self.main_frame, height=50, fg_color="transparent")
+        controls.pack(fill="x", padx=20, pady=10)
         
-        self.status_label = ctk.CTkLabel(self.main_frame, text="System Active", font=ctk.CTkFont(size=16))
-        self.status_label.pack(pady=5)
+        # Camera Selector
+        lbl_cam = ctk.CTkLabel(controls, text="Source:", font=("Roboto", 14))
+        lbl_cam.pack(side="left", padx=(0, 10))
+        
+        cam_options = list(self.available_cameras.keys())
+        self.cam_dropdown = ctk.CTkOptionMenu(controls, values=cam_options, command=self._on_cam_change, width=200)
+        self.cam_dropdown.set(cam_options[0] if cam_options else "No Camera")
+        self.cam_dropdown.pack(side="left")
+
+        # Active Model Indicator
+        model_text = f"ACTIVE MODEL: {self.active_model_name}" if self.active_model_name else "RAW FEED"
+        color = "#e63946" if self.active_model_name else "#2a9d8f"
+        
+        self.status_pill = ctk.CTkLabel(controls, text=f"  {model_text}  ", 
+                                      fg_color=color, corner_radius=15, 
+                                      text_color="white", font=("Roboto", 12, "bold"))
+        self.status_pill.pack(side="right")
+
+        # Video Area
+        self.video_container = ctk.CTkFrame(self.main_frame, fg_color="#000000")
+        self.video_container.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        
+        self.video_label = ctk.CTkLabel(self.video_container, text="Starting Feed...", text_color="gray")
+        self.video_label.pack(expand=True, fill="both")
 
         # Start Camera Thread
         self.stop_event = threading.Event()
-        self.face_engine = FaceEngine(db_path="assets/known_faces") # Already imported in splash
-        threading.Thread(target=self._camera_loop, daemon=True).start()
+        
+        # Determine initial camera index
+        start_cam = self.available_cameras.get(self.cam_dropdown.get(), 0)
+        
+        threading.Thread(target=self._camera_processing_loop, args=(start_cam,), daemon=True).start()
+        
+        # Start UI Update Loop (Main Thread)
+        self._update_ui_loop()
 
-    def _camera_loop(self):
-        cap = cv2.VideoCapture(0)
+    def _on_cam_change(self, selected_text):
+        new_idx = self.available_cameras.get(selected_text)
+        if new_idx is not None:
+            self._stop_camera()
+            # Brief pause to let thread die
+            self.after(200, lambda: self._restart_camera(new_idx))
+
+    def _restart_camera(self, idx):
+        self.stop_event = threading.Event()
+        threading.Thread(target=self._camera_processing_loop, args=(idx,), daemon=True).start()
+
+    def _update_ui_loop(self):
+        """Updates the image label from the main thread to prevent flickering."""
+        if hasattr(self, 'video_label') and self.latest_frame_image:
+            self.video_label.configure(image=self.latest_frame_image, text="")
+        
+        if not self.stop_event.is_set():
+            self.after(30, self._update_ui_loop) # ~30 FPS UI refresh
+
+    def _camera_processing_loop(self, cam_index):
+        if cam_index == -1: return
+        cap = cv2.VideoCapture(cam_index)
+        
         while not self.stop_event.is_set():
             ret, frame = cap.read()
             if not ret: break
 
-            # 1. Run Recognition
-            identity = self.face_engine.process_frame(frame)
-            
-            # 2. Trigger Plugins
-            self._trigger_user_scripts(identity)
+            # --- PROCESS BASED ON ACTIVE MODEL ---
+            identity = "Unknown"
+            processed_frame = frame.copy()
 
-            # 3. Update UI
-            # Draw on frame
-            color = (0, 255, 0) if identity != "Unknown" else (0, 0, 255)
-            cv2.rectangle(frame, (0,0), (640, 50), (0,0,0), -1)
-            cv2.putText(frame, f"TARGET: {identity}", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            if self.active_model_name == "Face Verify":
+                # Only run heavy face detection if selected
+                identity = self.face_engine.process_frame(frame)
+                
+                # Draw Box
+                color = (0, 255, 0) if identity != "Unknown" else (0, 0, 255)
+                cv2.rectangle(processed_frame, (0,0), (640, 50), (0,0,0), -1)
+                cv2.putText(processed_frame, f"ID: {identity}", (20, 35), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             
-            # Convert for Tkinter
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            im_pil = Image.fromarray(frame_rgb)
-            ctk_img = ctk.CTkImage(light_image=im_pil, dark_image=im_pil, size=(800, 600))
+            elif self.active_model_name == "Sentry Mode":
+                # Placeholder for Sentry logic
+                cv2.putText(processed_frame, "SENTRY MODE ACTIVE", (20, 50), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
             
+            # --- PREPARE FOR UI ---
+            # 1. Trigger Plugins (only if needed)
+            if identity != "Unknown":
+                self._trigger_user_scripts(identity)
+
+            # 2. Convert to CTkImage (Thread safe-ish, but better to keep lightweight)
             try:
-                self.video_label.configure(image=ctk_img, text="") 
-            except:
-                break
+                frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
+                im_pil = Image.fromarray(frame_rgb)
+                
+                # Calculate aspect ratio resize if needed, otherwise fit container
+                # For now fixed size for stability
+                ctk_img = ctk.CTkImage(light_image=im_pil, dark_image=im_pil, size=(800, 600))
+                
+                # Store for Main Thread
+                self.latest_frame_image = ctk_img
+            except Exception as e:
+                print(f"Frame Error: {e}")
+                continue
+                
         cap.release()
 
     def _trigger_user_scripts(self, name):
