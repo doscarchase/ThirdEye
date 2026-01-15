@@ -9,17 +9,17 @@
 #  strictly forbidden unless prior written permission is obtained.
 #  ----------------------------------------------------------------------------
 import customtkinter as ctk
-import onnxruntime as ort
 import threading
-from PIL import Image, ImageTk # Added ImageTk for video display
+import time
 import os
 import sys
 from pathlib import Path
-from security_core import HardwareGuard
+from PIL import Image, ImageTk
 import importlib
 
-# REMOVED: import cv2 (Move to lazy load)
-# REMOVED: from recognition_engine import FaceEngine (Move to lazy load)
+# --- CONFIGURATION ---
+ctk.set_appearance_mode("System")
+ctk.set_default_color_theme("dark-blue")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(SCRIPT_DIR, "assets")
@@ -27,20 +27,56 @@ ASSETS_DIR = os.path.join(SCRIPT_DIR, "assets")
 def get_asset(filename):
     return os.path.join(ASSETS_DIR, filename)
 
-ctk.set_appearance_mode("System") 
-ctk.set_default_color_theme("dark-blue")
+class SplashScreen(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("ThirdEye Loading")
+        self.geometry("400x250")
+        self.overrideredirect(True)  # Remove title bar
+        self.attributes("-topmost", True) # Keep on top
+
+        # Center the splash screen
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = (sw - 400) // 2
+        y = (sh - 250) // 2
+        self.geometry(f"400x250+{x}+{y}")
+        
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
+        # Container
+        self.frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.frame.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        # Logo/Title
+        self.lbl_title = ctk.CTkLabel(self.frame, text="ThirdEye AI", font=("Roboto", 30, "bold"))
+        self.lbl_title.pack(pady=(40, 10))
+        
+        self.lbl_status = ctk.CTkLabel(self.frame, text="Initializing...", text_color="gray")
+        self.lbl_status.pack(pady=5)
+        
+        # Progress Bar
+        self.progress = ctk.CTkProgressBar(self.frame, width=300, height=15)
+        self.progress.set(0.0)
+        self.progress.pack(pady=20)
+
+    def update_progress(self, val, status_text):
+        self.progress.set(val)
+        self.lbl_status.configure(text=status_text)
+        self.update()
 
 class ThirdEyeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.base_path = Path(__file__).parent / "assets"
-        self.guard = HardwareGuard()
-        self.active_session = None 
+        # 1. Hide Main Window Initially
+        self.withdraw()
         
-        # Window Setup
+        # 2. Setup Basic Window Properties (so it's ready when shown)
         self.title("ThirdEye AI Suite")
         self.geometry("1200x800")
+        self.base_path = Path(__file__).parent / "assets"
         
         # Icon Setup
         try:
@@ -51,16 +87,78 @@ class ThirdEyeApp(ctk.CTk):
                 icon_path = self.base_path / "thirdeye_logo.png"
                 img = Image.open(icon_path)
                 self.tk.call('wm', 'iconphoto', self._w, ImageTk.PhotoImage(img))
-        except Exception as e:
-            print(f"Warning: Icon setup failed: {e}")
+        except:
+            pass
 
+        # 3. Launch Splash Screen
+        self.splash = SplashScreen(self)
+        
+        # 4. Start Loading Thread (Heavy lifting happens here)
+        threading.Thread(target=self._load_resources, daemon=True).start()
+
+    def _load_resources(self):
+        """Loads heavy libraries and assets while updating splash screen."""
+        try:
+            # -- STAGE 1: Security Core --
+            self.splash.update_progress(0.1, "Verifying Hardware ID...")
+            global HardwareGuard
+            from security_core import HardwareGuard
+            self.guard = HardwareGuard()
+            time.sleep(0.3) # Artificial delay for UX smoothness
+
+            # -- STAGE 2: AI Libraries --
+            self.splash.update_progress(0.3, "Loading Neural Engine (OpenCV)...")
+            global cv2
+            import cv2
+            
+            self.splash.update_progress(0.4, "Shaking The Robots Awake...")
+            # Pre-load any images if necessary here
+            time.sleep(1.4)
+
+            self.splash.update_progress(0.5, "Initializing Recognition Models...")
+            global FaceEngine
+            from recognition_engine import FaceEngine
+            
+            # -- STAGE 3: UI Assets --
+            self.splash.update_progress(0.8, "Loading Interface Assets...")
+            # Pre-load any images if necessary here
+            time.sleep(0.2)
+
+            self.splash.update_progress(0.9, "Petting Soft Kitties...")
+            # Pre-load any images if necessary here
+            time.sleep(1.2)
+
+            # -- FINISH --
+            self.splash.update_progress(1.0, "Ready!")
+            time.sleep(0.5)
+            
+            # Switch to Main Thread to update UI
+            self.after(0, self._finalize_startup)
+            
+        except Exception as e:
+            print(f"Critical Startup Error: {e}")
+            self.destroy()
+
+    def _finalize_startup(self):
+        """Called when loading is done. Builds UI and shows window."""
+        self.splash.destroy()
+        
+        # Setup the actual UI Layout
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        
         self._setup_sidebar()
         self._setup_main_area()
         self.show_library()
+        
+        # Show Main Window
+        self.deiconify()
+        
+        # Lift to top
+        self.lift()
+        self.attributes('-topmost',True)
+        self.after_idle(self.attributes,'-topmost',False)
 
+    # --- UI SETUP METHODS (Same as before) ---
     def _setup_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=220, corner_radius=0)
         self.sidebar.grid(row=0, column=0, sticky="nsew")
@@ -95,7 +193,7 @@ class ThirdEyeApp(ctk.CTk):
         self.main_frame.grid(row=0, column=1, sticky="nsew")
 
     def show_library(self):
-        self._stop_camera() # Stop camera if leaving the page
+        self._stop_camera()
         self._clear_main()
         
         header = ctk.CTkLabel(self.main_frame, text="Intelligence Library", font=ctk.CTkFont(size=22, weight="bold"))
@@ -139,43 +237,20 @@ class ThirdEyeApp(ctk.CTk):
         description = ctk.CTkLabel(card, text=desc, text_color="gray")
         description.pack(anchor="center", pady=(0, 15))
 
-    def show_settings(self):
+    def show_live_vision(self):
         self._stop_camera()
         self._clear_main()
-        lbl = ctk.CTkLabel(self.main_frame, text=f"Hardware ID: {self.guard.machine_id}", font=ctk.CTkFont(family="Courier"))
-        lbl.pack(pady=50)
-
-    # --- LAZY LOADING & FIXED LOGIC START HERE ---
-
-    def show_live_vision(self):
-        self._clear_main()
-        
-        # UI for Loading State
-        self.status_label = ctk.CTkLabel(self.main_frame, text="Initializing Neural Engine...", font=ctk.CTkFont(size=16))
-        self.status_label.pack(pady=20)
         
         self.video_label = ctk.CTkLabel(self.main_frame, text="")
         self.video_label.pack(pady=10)
-
-        # Start the heavy loading in a separate thread to keep UI responsive
-        threading.Thread(target=self._init_camera_thread, daemon=True).start()
-
-    def _init_camera_thread(self):
-        """Lazy load heavy libraries only when needed."""
-        global cv2, FaceEngine
         
-        # Import here so app startup isn't blocked!
-        if 'cv2' not in globals():
-            import cv2
-        if 'FaceEngine' not in globals():
-            from recognition_engine import FaceEngine
-            
-        # Initialize Engine
-        self.face_engine = FaceEngine(db_path="assets/known_faces")
-        
-        # Start Loop
+        self.status_label = ctk.CTkLabel(self.main_frame, text="System Active", font=ctk.CTkFont(size=16))
+        self.status_label.pack(pady=5)
+
+        # Start Camera Thread
         self.stop_event = threading.Event()
-        self._camera_loop()
+        self.face_engine = FaceEngine(db_path="assets/known_faces") # Already imported in splash
+        threading.Thread(target=self._camera_loop, daemon=True).start()
 
     def _camera_loop(self):
         cap = cv2.VideoCapture(0)
@@ -189,43 +264,44 @@ class ThirdEyeApp(ctk.CTk):
             # 2. Trigger Plugins
             self._trigger_user_scripts(identity)
 
-            # 3. Update GUI (Must convert CV2 image to CTkImage)
-            # Convert BGR to RGB
+            # 3. Update UI
+            # Draw on frame
+            color = (0, 255, 0) if identity != "Unknown" else (0, 0, 255)
+            cv2.rectangle(frame, (0,0), (640, 50), (0,0,0), -1)
+            cv2.putText(frame, f"TARGET: {identity}", (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            
+            # Convert for Tkinter
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # Draw name on frame
-            cv2.putText(frame_rgb, f"ID: {identity}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-            
-            # Convert to PIL Image
             im_pil = Image.fromarray(frame_rgb)
-            ctk_img = ctk.CTkImage(light_image=im_pil, dark_image=im_pil, size=(640, 480))
+            ctk_img = ctk.CTkImage(light_image=im_pil, dark_image=im_pil, size=(800, 600))
             
-            # Update Label (Use 'after' for thread safety is best, but this works for simple apps)
             try:
                 self.video_label.configure(image=ctk_img, text="") 
-                self.status_label.configure(text=f"System Active: {identity}")
             except:
-                break # Window closed
-            
+                break
         cap.release()
 
     def _trigger_user_scripts(self, name):
         plugin_dir = "plugins"
         if not os.path.exists(plugin_dir): return
-
         for filename in os.listdir(plugin_dir):
             if filename.endswith(".py"):
                 module_name = f"plugins.{filename[:-3]}"
                 try:
                     user_plugin = importlib.import_module(module_name)
-                    # Reload allows editing plugins while app runs
-                    importlib.reload(user_plugin) 
+                    importlib.reload(user_plugin)
                     if hasattr(user_plugin, "on_recognition"):
                         user_plugin.on_recognition(name)
-                except Exception as e:
-                    print(f"Plugin Error: {e}")
+                except Exception:
+                    pass
+
+    def show_settings(self):
+        self._stop_camera()
+        self._clear_main()
+        lbl = ctk.CTkLabel(self.main_frame, text=f"Hardware ID: {self.guard.machine_id}", font=ctk.CTkFont(family="Courier"))
+        lbl.pack(pady=50)
 
     def _stop_camera(self):
-        """Helper to safely stop the thread when switching tabs."""
         if hasattr(self, 'stop_event'):
             self.stop_event.set()
 
