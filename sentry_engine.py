@@ -1,79 +1,116 @@
-#  ----------------------------------------------------------------------------
+# doscarchase/thirdeye/sentry_engine.py
+# ----------------------------------------------------------------------------
 #  ThirdEye AI Vision Suite - Proprietary and Confidential
 #  Copyright (c) 2026 Devon Chase. All rights reserved.
-#  ----------------------------------------------------------------------------
+# ----------------------------------------------------------------------------
 import cv2
 import numpy as np
+import onnxruntime as ort
+import os
 
 class SentryEngine:
-    def __init__(self):
+    def __init__(self, model_path="assets/sentry_model.onnx"):
         """
-        Initializes the Sentry Mode engine.
-        Uses OpenCV's HOG + SVM People Detector which is BSD Licensed
-        (Free for commercial use and resale, unlike YOLOv8/AGPL).
+        Initializes the YOLOX-Nano Neural Engine (Apache 2.0).
+        This replaces the obsolete HOG method with modern Deep Learning.
         """
-        # 1. Initialize Background Subtractor for Motion Detection
-        # history=500: learns background over time
-        # varThreshold=16: sensitivity (lower is more sensitive)
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=500, varThreshold=25, detectShadows=True
-        )
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Sentry Model not found at {model_path}. Run 'setup_sentry.py' first.")
 
-        # 2. Initialize HOG Descriptor for Human Detection
-        self.hog = cv2.HOGDescriptor()
-        self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        # Load Neural Network onto CPU (or GPU if available)
+        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.session = ort.InferenceSession(model_path, providers=providers)
+        
+        # YOLOX-Nano Input Resolution
+        self.input_shape = (416, 416) 
+        self.classes = ["person"] # We only care about Index 0 (Person) from COCO dataset
 
     def process_frame(self, frame):
         """
-        Detects moving humans in the frame.
-        Returns: list of bounding boxes [(x, y, w, h), ...]
+        Inference Pipeline: Preprocess -> AI Model -> Postprocess -> NMS
+        Returns: list of [x, y, w, h]
         """
-        detections = []
-        height, width = frame.shape[:2]
-
-        # Optimization: Resize frame for faster processing
-        # We process on a smaller scale (e.g., width 640) to keep FPS high
-        process_width = 640
-        scale = width / float(process_width)
-        process_height = int(height / scale)
+        input_tensor, ratio = self._preprocess(frame)
         
-        small_frame = cv2.resize(frame, (process_width, process_height))
-
-        # --- STEP 1: Motion Check ---
-        # Apply background subtraction to find moving areas
-        fg_mask = self.bg_subtractor.apply(small_frame)
+        # Run AI Inference
+        outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})[0]
         
-        # Remove shadows (gray pixels) and noise
-        _, fg_mask = cv2.threshold(fg_mask, 250, 255, cv2.THRESH_BINARY)
+        # Decode and Filter (Score Thresh 0.5 = 50% confidence)
+        boxes, scores = self._postprocess(outputs, ratio, conf_thresh=0.5)
         
-        # Calculate amount of motion
-        motion_ratio = cv2.countNonZero(fg_mask) / (process_width * process_height)
+        # Clean up overlaps (Non-Maximum Suppression)
+        final_boxes = self._nms(boxes, scores, iou_thresh=0.45)
         
-        # Threshold: If < 0.5% of frame is moving, ignore (saves CPU)
-        if motion_ratio < 0.005:
-            return []
+        return final_boxes
 
-        # --- STEP 2: Human Detection ---
-        # Only run HOG if motion is detected
-        # winStride: Step size (8,8) is faster, (4,4) is more accurate
-        # padding: Pad input for objects near border
-        # scale: Image pyramid scale
-        boxes, weights = self.hog.detectMultiScale(
-            small_frame, 
-            winStride=(8, 8), 
-            padding=(8, 8), 
-            scale=1.05
-        )
+    def _preprocess(self, img):
+        # Resize to 416x416 without stretching (padding)
+        h, w = img.shape[:2]
+        scale = min(self.input_shape[0] / h, self.input_shape[1] / w)
+        
+        # Compute new size
+        nw, nh = int(w * scale), int(h * scale)
+        resized_img = cv2.resize(img, (nw, nh))
+        
+        # Create padded image
+        padded_img = np.full((self.input_shape[0], self.input_shape[1], 3), 114, dtype=np.uint8)
+        padded_img[:nh, :nw] = resized_img
+        
+        # Convert to float & HWC -> CHW format
+        blob = padded_img.astype(np.float32)
+        blob = blob.transpose(2, 0, 1) # Change to Channel-First
+        blob = np.expand_dims(blob, axis=0) # Add batch dimension
+        
+        return blob, scale
 
-        # --- STEP 3: Scale Results Back ---
-        for (x, y, w, h) in boxes:
-            # Scale coordinates back to original frame size
-            real_rect = (
-                int(x * scale),
-                int(y * scale),
-                int(w * scale),
-                int(h * scale)
-            )
-            detections.append(real_rect)
+    def _postprocess(self, outputs, scale, conf_thresh):
+        predictions = outputs[0]
+        boxes = []
+        scores = []
+        
+        # YOLOX Output: [x_center, y_center, width, height, obj_conf, class_conf...]
+        # We only look at class_index 0 (Person) which is index 5 in the array
+        
+        # Vectorized filtering for speed
+        obj_conf = predictions[:, 4]
+        class_conf = predictions[:, 5] # Index 5 is 'Person' in COCO
+        total_conf = obj_conf * class_conf
+        
+        # Filter by confidence
+        mask = total_conf > conf_thresh
+        valid_preds = predictions[mask]
+        valid_scores = total_conf[mask]
+        
+        if len(valid_preds) == 0:
+            return [], []
 
-        return detections
+        # Convert output boxes to standard [x, y, w, h] and rescale to original image
+        for i, pred in enumerate(valid_preds):
+            x_c, y_c, w, h = pred[:4]
+            
+            # Undo scaling
+            x_c /= scale
+            y_c /= scale
+            w /= scale
+            h /= scale
+            
+            # Convert Center-format to Top-Left format
+            x = int(x_c - w/2)
+            y = int(y_c - h/2)
+            w = int(w)
+            h = int(h)
+            
+            boxes.append([x, y, w, h])
+            scores.append(float(valid_scores[i]))
+            
+        return boxes, scores
+
+    def _nms(self, boxes, scores, iou_thresh):
+        if not boxes: return []
+        
+        # Use OpenCV's built-in fast NMS
+        indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=0.3, nms_threshold=iou_thresh)
+        
+        if len(indices) > 0:
+            return [boxes[i] for i in indices.flatten()]
+        return []
