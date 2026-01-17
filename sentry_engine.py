@@ -28,7 +28,7 @@ class SentryEngine:
     def process_frame(self, frame):
         """
         Inference Pipeline: Preprocess -> AI Model -> Postprocess -> NMS
-        Returns: list of [x, y, w, h]
+        Returns: list of tuples: ([x, y, w, h], score)
         """
         input_tensor, ratio = self._preprocess(frame)
         
@@ -39,9 +39,10 @@ class SentryEngine:
         boxes, scores = self._postprocess(outputs, ratio, conf_thresh=0.5)
         
         # Clean up overlaps (Non-Maximum Suppression)
-        final_boxes = self._nms(boxes, scores, iou_thresh=0.45)
+        final_boxes, final_scores = self._nms(boxes, scores, iou_thresh=0.45)
         
-        return final_boxes
+        # Zip results together
+        return list(zip(final_boxes, final_scores))
 
     def _preprocess(self, img):
         # Resize to 416x416 without stretching (padding)
@@ -88,7 +89,13 @@ class SentryEngine:
         for i, pred in enumerate(valid_preds):
             x_c, y_c, w, h = pred[:4]
             
-            # Undo scaling
+            # [FIX] Scale normalized coordinates (0-1) to input resolution (416)
+            x_c *= self.input_shape[1]
+            y_c *= self.input_shape[0]
+            w *= self.input_shape[1]
+            h *= self.input_shape[0]
+            
+            # Undo letterbox scaling
             x_c /= scale
             y_c /= scale
             w /= scale
@@ -106,11 +113,13 @@ class SentryEngine:
         return boxes, scores
 
     def _nms(self, boxes, scores, iou_thresh):
-        if not boxes: return []
+        if not boxes: return [], []
         
         # Use OpenCV's built-in fast NMS
         indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=0.3, nms_threshold=iou_thresh)
         
         if len(indices) > 0:
-            return [boxes[i] for i in indices.flatten()]
-        return []
+            final_boxes = [boxes[i] for i in indices.flatten()]
+            final_scores = [scores[i] for i in indices.flatten()]
+            return final_boxes, final_scores
+        return [], []
