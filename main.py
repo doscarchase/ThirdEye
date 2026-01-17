@@ -415,8 +415,11 @@ class ThirdEyeApp(ctk.CTk):
         self.available_cameras = {}
         real_names = self._get_platform_camera_names()
         
-        # Check first 10 indices
-        for i in range(10):
+        # FIX: Only scan the number of cameras found by the OS
+        # If no cameras reported (fallback), we try just 0 and 1 to be safe.
+        scan_limit = len(real_names) if real_names else 2
+        
+        for i in range(scan_limit):
             # Enforce DirectShow on Windows to match pygrabber's list order
             backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_ANY
             cap = cv2.VideoCapture(i, backend)
