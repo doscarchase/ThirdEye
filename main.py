@@ -463,7 +463,7 @@ class ThirdEyeApp(ctk.CTk):
                 
                 if detections:
                     # Alert Status
-                    cv2.putText(processed_frame, "INTRUDER DETECTED", (20, 50), 
+                    cv2.putText(processed_frame, "HUMAN DETECTED", (20, 50), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     
                     # Draw Bounding Boxes
@@ -477,7 +477,7 @@ class ThirdEyeApp(ctk.CTk):
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
                     # Scanning Status
-                    cv2.putText(processed_frame, "Sentry Active: Scanning...", (20, 50), 
+                    cv2.putText(processed_frame, "SENTRY ACTIVE: SCANNING...", (20, 50), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
             # --- PREPARE FOR UI ---
