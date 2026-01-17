@@ -247,7 +247,6 @@ class ThirdEyeApp(ctk.CTk):
         self.scroll.grid_columnconfigure(1, weight=1)
         
         # --- SCROLL FIX: Bind Global MouseWheel ONLY when hovering the frame ---
-        # This captures the wheel event even if hovering over buttons or images
         self.scroll.bind("<Enter>", lambda e: self._bind_mouse_wheel())
         self.scroll.bind("<Leave>", lambda e: self._unbind_mouse_wheel())
 
@@ -266,6 +265,7 @@ class ThirdEyeApp(ctk.CTk):
         
         for i, (name, desc, img_path) in enumerate(models):
             self._create_grid_card(self.scroll, name, desc, img_path, i // 2, i % 2)
+
     # Helper methods for the scroll fix
     def _bind_mouse_wheel(self):
         self.bind_all("<MouseWheel>", self._on_mouse_wheel)  # Windows
@@ -288,6 +288,7 @@ class ThirdEyeApp(ctk.CTk):
                 self.scroll._parent_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         except Exception:
             pass
+
     def _get_platform_camera_names(self):
         """Fetches real camera names using pygrabber (Win) or v4l2 (Linux)."""
         names = []
@@ -355,7 +356,6 @@ class ThirdEyeApp(ctk.CTk):
         btn.pack(pady=(0, 20))
 
         # --- FIX: Recursively bind mouse wheel to all card elements ---
-        # This ensures scrolling works even when hovering over a card/image/text
         def bind_scroll(widget):
             widget.bind("<MouseWheel>", self._on_mouse_wheel)  # Windows
             widget.bind("<Button-4>", self._on_mouse_wheel)    # Linux Up
@@ -458,17 +458,22 @@ class ThirdEyeApp(ctk.CTk):
             
             elif self.active_model_name == "Sentry Mode":
                 # [NEW] Sentry Implementation
-                humans = self.sentry_engine.process_frame(frame)
+                # process_frame now returns list of (box, score) tuples
+                detections = self.sentry_engine.process_frame(frame)
                 
-                if humans:
+                if detections:
                     # Alert Status
                     cv2.putText(processed_frame, "INTRUDER DETECTED", (20, 50), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     
                     # Draw Bounding Boxes
-                    for (x, y, w, h) in humans:
+                    for (box, score) in detections:
+                        x, y, w, h = box
                         cv2.rectangle(processed_frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
-                        cv2.putText(processed_frame, "Human", (x, y-10),
+                        
+                        # Add percentage text
+                        text = f"Human {int(score * 100)}%"
+                        cv2.putText(processed_frame, text, (x, y-10),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
                     # Scanning Status
