@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 from PIL import Image, ImageTk
 import importlib
+from automation_core import AutomationManager
+from flow_editor import FlowEditor
 
 # --- CONFIGURATION ---
 ctk.set_appearance_mode("System")
@@ -316,6 +318,9 @@ class ThirdEyeApp(ctk.CTk):
         self.available_cameras = {}    # { "Camera 0": 0, ... }
         self.selected_camera_idx = 0
         self.latest_frame_image = None # Thread-safe frame transfer
+
+        # [NEW] Initialize Automation Manager
+        self.automation_manager = AutomationManager()
         
         # Engine Registry for Tuning
         self.engines = {}
@@ -473,6 +478,13 @@ class ThirdEyeApp(ctk.CTk):
         self.btn_lib = ctk.CTkButton(self.sidebar, text="Model Library", height=40, command=self.show_library)
         self.btn_lib.grid(row=2, column=0, padx=20, pady=10)
         
+        # [NEW] Automation Button
+        self.btn_auto = ctk.CTkButton(self.sidebar, text="Automation", height=40, fg_color="#5A2E85", hover_color="#431D66", command=self.show_automation_dashboard)
+        self.btn_auto.grid(row=3, column=0, padx=20, pady=10)
+
+        self.btn_set = ctk.CTkButton(self.sidebar, text="Settings", height=40, command=self.show_settings)
+        self.btn_set.grid(row=4, column=0, padx=20, pady=10) # Shift row down
+        
         self.btn_set = ctk.CTkButton(self.sidebar, text="Settings", height=40, command=self.show_settings)
         self.btn_set.grid(row=3, column=0, padx=20, pady=10)
         
@@ -610,15 +622,20 @@ class ThirdEyeApp(ctk.CTk):
         btn_text = "Active" if is_active else "Activate"
         btn_color = "green" if is_active else ["#3B8ED0", "#1F6AA5"]
         
-        btn = ctk.CTkButton(btn_frame, text=btn_text, fg_color=btn_color, width=120,
+        btn = ctk.CTkButton(btn_frame, text=btn_text, fg_color=btn_color, width=90,
                             command=lambda n=name: self._activate_and_switch(n))
-        btn.pack(side="left", padx=5)
+        btn.pack(side="left", padx=2)
 
         # Tune Button
-        tune_btn = ctk.CTkButton(btn_frame, text="Tune", width=80, fg_color="transparent", 
+        tune_btn = ctk.CTkButton(btn_frame, text="Tune", width=60, fg_color="transparent", 
                                border_width=2, border_color="gray",
                                command=lambda n=name: self._open_tuner(n))
-        tune_btn.pack(side="left", padx=5)
+        tune_btn.pack(side="left", padx=2)
+
+        # [NEW] Flow/Auto Button
+        flow_btn = ctk.CTkButton(btn_frame, text="⚡", width=40, fg_color="#5A2E85",
+                               command=lambda n=name: self._open_flow_editor(n))
+        flow_btn.pack(side="left", padx=2)
 
         # --- FIX: Recursively bind mouse wheel to all card elements ---
         def bind_scroll(widget):
@@ -628,6 +645,40 @@ class ThirdEyeApp(ctk.CTk):
             
         for widget in [card, img_label, title, description, btn_frame]:
             bind_scroll(widget)
+
+    def _open_flow_editor(self, model_name):
+        FlowEditor(self, model_name, self.automation_manager)
+    
+    def show_automation_dashboard(self):
+        """Displays a summary of active automations."""
+        self._stop_camera()
+        self._clear_main()
+        
+        ctk.CTkLabel(self.main_frame, text="Active Automation Chains", font=("Roboto", 24, "bold")).pack(pady=20)
+        
+        scroll = ctk.CTkScrollableFrame(self.main_frame)
+        scroll.pack(fill="both", expand=True, padx=40, pady=20)
+        
+        # Refresh plugins to be safe
+        self.automation_manager.refresh_plugins()
+        
+        if not self.automation_manager.active_flows:
+            ctk.CTkLabel(scroll, text="No automation flows configured yet.", text_color="gray").pack(pady=20)
+            ctk.CTkLabel(scroll, text="Go to Model Library -> ⚡ icon to configure.", text_color="gray").pack()
+        
+        for model_name, flow in self.automation_manager.active_flows.items():
+            if not flow: continue
+            
+            f = ctk.CTkFrame(scroll, border_width=1, border_color="gray")
+            f.pack(fill="x", pady=10)
+            
+            ctk.CTkLabel(f, text=f"Model: {model_name}", font=("Roboto", 16, "bold")).pack(anchor="w", padx=10, pady=5)
+            
+            flow_text = " ➤ ".join([f"{step['script']} ({step['delay']}s)" for step in flow])
+            ctk.CTkLabel(f, text=flow_text, text_color="#3B8ED0").pack(anchor="w", padx=10, pady=(0,10))
+            
+            ctk.CTkButton(f, text="Edit Flow", height=25, 
+                         command=lambda n=model_name: self._open_flow_editor(n)).pack(anchor="e", padx=10, pady=(0,5))
 
     def _open_tuner(self, model_name):
         engine = self.engines.get(model_name)
@@ -711,10 +762,17 @@ class ThirdEyeApp(ctk.CTk):
         if cam_index == -1: return
         cap = cv2.VideoCapture(cam_index)
         
+        # [FIX] Initialize timing variables BEFORE the loop
+        last_trigger_time = 0
+        cooldown_seconds = 5.0 
+        
         while not self.stop_event.is_set():
             ret, frame = cap.read()
             if not ret: break
 
+            # [FIX] Initialize detection_data every frame so it always exists
+            detection_data = None
+            
             # --- PROCESS BASED ON ACTIVE MODEL ---
             identity = "Unknown"
             processed_frame = frame.copy()
@@ -728,9 +786,12 @@ class ThirdEyeApp(ctk.CTk):
                 cv2.rectangle(processed_frame, (0,0), (640, 50), (0,0,0), -1)
                 cv2.putText(processed_frame, f"ID: {identity}", (20, 35), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+                
+                # [FIX] Capture data for automation
+                if identity != "Unknown":
+                    detection_data = {"identity": identity, "score": 1.0}
             
             elif self.active_model_name == "Sentry Mode":
-                # Sentry Implementation - Human Only
                 detections = self.sentry_engine.process_frame(frame)
                 
                 if detections:
@@ -747,26 +808,37 @@ class ThirdEyeApp(ctk.CTk):
                         text = f"{label.upper()} {int(score * 100)}%"
                         cv2.putText(processed_frame, text, (x, y-10),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    
+                    # [FIX] Capture the first detection for automation
+                    box, score, label = detections[0]
+                    detection_data = {"identity": label, "score": float(score)}
                 else:
                     # Scanning Status
                     cv2.putText(processed_frame, "SENTRY ACTIVE: SCANNING...", (20, 50), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            # --- AUTOMATION TRIGGER ---
+            current_time = time.time()
+            # Now detection_data is guaranteed to be either None or a dict
+            if detection_data and (current_time - last_trigger_time > cooldown_seconds):
+                # Prepare context
+                context = {
+                    "model": self.active_model_name,
+                    "identity": detection_data["identity"],
+                    "score": detection_data["score"],
+                    "timestamp": current_time
+                }
+                
+                # Trigger the flow manager
+                self.automation_manager.trigger_flow(self.active_model_name, context)
+                
+                last_trigger_time = current_time
             
             # --- PREPARE FOR UI ---
-            # 1. Trigger Plugins (only if needed)
-            if identity != "Unknown":
-                self._trigger_user_scripts(identity)
-
-            # 2. Convert to CTkImage (Thread safe-ish, but better to keep lightweight)
             try:
                 frame_rgb = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
                 im_pil = Image.fromarray(frame_rgb)
-                
-                # Calculate aspect ratio resize if needed, otherwise fit container
-                # For now fixed size for stability
                 ctk_img = ctk.CTkImage(light_image=im_pil, dark_image=im_pil, size=(800, 600))
-                
-                # Store for Main Thread
                 self.latest_frame_image = ctk_img
             except Exception as e:
                 print(f"Frame Error: {e}")
