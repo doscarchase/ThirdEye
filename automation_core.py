@@ -29,7 +29,7 @@ class AutomationManager:
                 f.write("")
 
         # Define Default Plugins content
-        # We use inspect.cleandoc ensures indentation is removed regardless of how you copy/paste
+        # Use inspect.cleandoc to remove the indentation that was causing the crash
         defaults = {
             "visual_flash.py": r'''
                 """
@@ -96,8 +96,8 @@ class AutomationManager:
         for filename, content in defaults.items():
             path = os.path.join(PLUGIN_DIR, filename)
             if not os.path.exists(path):
+                # This fixes the indentation error by cleaning the string before writing
                 with open(path, "w") as f:
-                    # inspect.cleandoc fixes the indentation error
                     f.write(inspect.cleandoc(content))
                     print(f"Created default plugin: {filename}")
 
