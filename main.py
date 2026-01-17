@@ -485,9 +485,6 @@ class ThirdEyeApp(ctk.CTk):
         self.btn_set = ctk.CTkButton(self.sidebar, text="Settings", height=40, command=self.show_settings)
         self.btn_set.grid(row=4, column=0, padx=20, pady=10) # Shift row down
         
-        self.btn_set = ctk.CTkButton(self.sidebar, text="Settings", height=40, command=self.show_settings)
-        self.btn_set.grid(row=3, column=0, padx=20, pady=10)
-        
         self.theme_switch = ctk.CTkSwitch(self.sidebar, text="Dark Mode", command=self._toggle_theme)
         self.theme_switch.select()
         self.theme_switch.grid(row=5, column=0, padx=20, pady=20)
@@ -752,9 +749,18 @@ class ThirdEyeApp(ctk.CTk):
 
     def _update_ui_loop(self):
         """Updates the image label from the main thread to prevent flickering."""
-        if hasattr(self, 'video_label') and self.latest_frame_image:
-            self.video_label.configure(image=self.latest_frame_image, text="")
+        # Check if attribute exists AND the actual widget still exists
+        if (hasattr(self, 'video_label') and 
+            self.video_label is not None and 
+            self.video_label.winfo_exists() and 
+            self.latest_frame_image):
+            
+            try:
+                self.video_label.configure(image=self.latest_frame_image, text="")
+            except Exception:
+                pass # Ignore errors if widget is destroyed mid-update
         
+        # Only schedule next update if not stopped
         if not self.stop_event.is_set():
             self.after(30, self._update_ui_loop) # ~30 FPS UI refresh
 
@@ -826,9 +832,9 @@ class ThirdEyeApp(ctk.CTk):
                     "model": self.active_model_name,
                     "identity": detection_data["identity"],
                     "score": detection_data["score"],
-                    "timestamp": current_time
-                }
-                
+                    "timestamp": current_time,
+                    "frame": frame.copy()  # <--- NEW: Passes the image to plugins
+                }   
                 # Trigger the flow manager
                 self.automation_manager.trigger_flow(self.active_model_name, context)
                 
