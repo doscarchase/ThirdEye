@@ -458,21 +458,22 @@ class ThirdEyeApp(ctk.CTk):
             
             elif self.active_model_name == "Sentry Mode":
                 # [NEW] Sentry Implementation
-                # process_frame now returns list of (box, score) tuples
+                # process_frame now returns list of (box, score, label) tuples
                 detections = self.sentry_engine.process_frame(frame)
                 
                 if detections:
                     # Alert Status
-                    cv2.putText(processed_frame, "HUMAN DETECTED", (20, 50), 
+                    cv2.putText(processed_frame, "SENTRY ALERT", (20, 50), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     
                     # Draw Bounding Boxes
-                    for (box, score) in detections:
+                    # [FIX] Unpack 3 values: box, score, AND label
+                    for (box, score, label) in detections:
                         x, y, w, h = box
                         cv2.rectangle(processed_frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
                         
-                        # Add percentage text
-                        text = f"Human {int(score * 100)}%"
+                        # Add percentage text using the dynamic label (e.g. "Dog 95%")
+                        text = f"{label} {int(score * 100)}%"
                         cv2.putText(processed_frame, text, (x, y-10),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 else:
