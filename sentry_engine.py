@@ -13,6 +13,10 @@ class SentryEngine:
         """
         Initializes the YOLOX-Nano Neural Engine (Apache 2.0).
         This replaces the obsolete HOG method with modern Deep Learning.
+        
+        [UPDATE] Now includes Multi-Class Detection:
+        - Persons
+        - Animals (Cat, Dog, Bird, Horse, Sheep, Cow, Bear, Zebra, Giraffe)
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Sentry Model not found at {model_path}. Run 'setup_sentry.py' first.")
@@ -23,7 +27,22 @@ class SentryEngine:
         
         # YOLOX-Nano Input Resolution
         self.input_shape = (416, 416) 
-        self.classes = ["person"] # We only care about Index 0 (Person) from COCO dataset
+        
+        # COCO Dataset Class Mapping for Sentry Mode
+        # We filter specifically for Person + Animals
+        self.class_mapping = {
+            0: "Person",
+            14: "Bird",
+            15: "Cat",
+            16: "Dog",
+            17: "Horse",
+            18: "Sheep",
+            19: "Cow",
+            20: "Elephant",
+            21: "Bear",
+            22: "Zebra",
+            23: "Giraffe"
+        }
 
         # [FIX] Pre-compute grids for decoding raw YOLOX outputs
         self.grids = []
@@ -41,7 +60,7 @@ class SentryEngine:
     def process_frame(self, frame):
         """
         Inference Pipeline: Preprocess -> AI Model -> Postprocess -> NMS
-        Returns: list of tuples: ([x, y, w, h], score)
+        Returns: list of tuples: ([x, y, w, h], score, label_name)
         """
         input_tensor, ratio = self._preprocess(frame)
         
@@ -50,14 +69,16 @@ class SentryEngine:
         
         # Decode and Filter 
         # [TUNED] Increased conf_thresh to 0.65 to stop detecting random objects/motion
-        boxes, scores = self._postprocess(outputs, ratio, conf_thresh=0.65)
+        boxes, scores, class_ids = self._postprocess(outputs, ratio, conf_thresh=0.65)
         
         # Clean up overlaps (Non-Maximum Suppression)
-        # [TUNED] Lowered iou_thresh to 0.30 to ensure we only get a single square per person
-        final_boxes, final_scores = self._nms(boxes, scores, iou_thresh=0.30)
+        # [TUNED] Lowered iou_thresh to 0.30 to ensure we only get a single square per object
+        final_boxes, final_scores, final_class_ids = self._nms(boxes, scores, class_ids, iou_thresh=0.30)
         
-        # Zip results together so main.py can display scores
-        return list(zip(final_boxes, final_scores))
+        # Map class IDs to names and zip results
+        final_labels = [self.class_mapping.get(cid, "Unknown") for cid in final_class_ids]
+        
+        return list(zip(final_boxes, final_scores, final_labels))
 
     def _preprocess(self, img):
         # Resize to 416x416 without stretching (padding)
@@ -83,33 +104,43 @@ class SentryEngine:
         predictions = outputs[0]
         boxes = []
         scores = []
+        class_ids = []
         
         # [FIX] Decode YOLOX raw outputs: (offset + grid) * stride
         if predictions.shape[0] == self.grid_coords.shape[0]:
             predictions[:, :2] = (predictions[:, :2] + self.grid_coords) * self.grid_strides
             predictions[:, 2:4] = np.exp(predictions[:, 2:4]) * self.grid_strides
 
-        # YOLOX Output: [x_center, y_center, width, height, obj_conf, class_conf...]
-        # We only look at class_index 0 (Person) which is index 5 in the array
-        
-        # Vectorized filtering for speed
+        # YOLOX Output: [x_center, y_center, width, height, obj_conf, class_scores...]
         obj_conf = predictions[:, 4]
-        class_conf = predictions[:, 5] # Index 5 is 'Person' in COCO
-        total_conf = obj_conf * class_conf
         
-        # Filter by confidence
-        mask = total_conf > conf_thresh
+        # Slice for class scores (Index 5 onwards)
+        class_scores = predictions[:, 5:]
+        
+        # Find the best class for each anchor
+        detected_class_indices = np.argmax(class_scores, axis=1)
+        detected_class_confs = np.max(class_scores, axis=1)
+        
+        total_conf = obj_conf * detected_class_confs
+        
+        # Filter by confidence AND by whether the class is in our interest list
+        # (We only care about indices present in self.class_mapping)
+        valid_indices_set = list(self.class_mapping.keys())
+        
+        mask = (total_conf > conf_thresh) & (np.isin(detected_class_indices, valid_indices_set))
+        
         valid_preds = predictions[mask]
         valid_scores = total_conf[mask]
+        valid_classes = detected_class_indices[mask]
         
         if len(valid_preds) == 0:
-            return [], []
+            return [], [], []
 
         # Convert output boxes to standard [x, y, w, h] and rescale to original image
         for i, pred in enumerate(valid_preds):
             x_c, y_c, w, h = pred[:4]
             
-            # Undo letterbox scaling (Coordinates are now in absolute 416x416 pixels)
+            # Undo letterbox scaling
             x_c /= scale
             y_c /= scale
             w /= scale
@@ -123,10 +154,12 @@ class SentryEngine:
             
             boxes.append([x, y, w, h])
             scores.append(float(valid_scores[i]))
+            class_ids.append(int(valid_classes[i]))
             
-        return boxes, scores
-    def _nms(self, boxes, scores, iou_thresh):
-        if not boxes: return [], []
+        return boxes, scores, class_ids
+
+    def _nms(self, boxes, scores, class_ids, iou_thresh):
+        if not boxes: return [], [], []
         
         # Use OpenCV's built-in fast NMS
         indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=0.3, nms_threshold=iou_thresh)
@@ -134,5 +167,6 @@ class SentryEngine:
         if len(indices) > 0:
             final_boxes = [boxes[i] for i in indices.flatten()]
             final_scores = [scores[i] for i in indices.flatten()]
-            return final_boxes, final_scores
-        return [], []
+            final_class_ids = [class_ids[i] for i in indices.flatten()]
+            return final_boxes, final_scores, final_class_ids
+        return [], [], []
