@@ -127,6 +127,11 @@ class ThirdEyeApp(ctk.CTk):
             # Initialize engine once here to avoid lag later
             self.face_engine = FaceEngine(db_path="assets/known_faces")
             
+            self.splash.update_progress(0.6, "Arming Sentry Mode...")
+            global SentryEngine
+            from sentry_engine import SentryEngine
+            self.sentry_engine = SentryEngine()
+
             # -- STAGE 3: UI Assets --
             self.splash.update_progress(0.8, "Loading Interface Assets...")
             time.sleep(0.2)
@@ -452,9 +457,23 @@ class ThirdEyeApp(ctk.CTk):
                            cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             
             elif self.active_model_name == "Sentry Mode":
-                # Placeholder for Sentry logic
-                cv2.putText(processed_frame, "SENTRY MODE ACTIVE", (20, 50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                # [NEW] Sentry Implementation
+                humans = self.sentry_engine.process_frame(frame)
+                
+                if humans:
+                    # Alert Status
+                    cv2.putText(processed_frame, "INTRUDER DETECTED", (20, 50), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    
+                    # Draw Bounding Boxes
+                    for (x, y, w, h) in humans:
+                        cv2.rectangle(processed_frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
+                        cv2.putText(processed_frame, "Human", (x, y-10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                else:
+                    # Scanning Status
+                    cv2.putText(processed_frame, "Sentry Active: Scanning...", (20, 50), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
             # --- PREPARE FOR UI ---
             # 1. Trigger Plugins (only if needed)
