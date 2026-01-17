@@ -27,6 +27,118 @@ ASSETS_DIR = os.path.join(SCRIPT_DIR, "assets")
 def get_asset(filename):
     return os.path.join(ASSETS_DIR, filename)
 
+class ToolTip(ctk.CTkToplevel):
+    """Simple tooltip window for explaining parameters."""
+    def __init__(self, parent, text):
+        super().__init__(parent)
+        self.withdraw()
+        self.overrideredirect(True)
+        self.label = ctk.CTkLabel(self, text=text, fg_color="#333333", corner_radius=6, padx=10, pady=5)
+        self.label.pack()
+        
+    def show(self, x, y):
+        self.geometry(f"+{x+20}+{y}")
+        self.deiconify()
+        
+    def hide(self):
+        self.withdraw()
+
+class ModelTuner(ctk.CTkToplevel):
+    def __init__(self, parent, model_name, engine_instance):
+        super().__init__(parent)
+        self.title(f"Tune Model: {model_name}")
+        self.geometry("500x600")
+        self.engine = engine_instance
+        self.model_name = model_name
+        
+        # Make modal-like
+        self.attributes("-topmost", True)
+        
+        # Container
+        self.scroll = ctk.CTkScrollableFrame(self)
+        self.scroll.pack(fill="both", expand=True, padx=20, pady=20)
+        
+        ctk.CTkLabel(self.scroll, text=f"Tuning: {model_name}", 
+                    font=("Roboto", 20, "bold")).pack(pady=(0, 20), anchor="w")
+
+        # Get config from engine
+        if hasattr(self.engine, "get_tunable_config"):
+            self.config = self.engine.get_tunable_config()
+            self._build_ui()
+        else:
+            ctk.CTkLabel(self.scroll, text="This model does not support tuning yet.", 
+                        text_color="gray").pack()
+
+    def _build_ui(self):
+        # Separate Standard and Advanced
+        standard_params = {k:v for k,v in self.config.items() if not v.get("advanced", False)}
+        advanced_params = {k:v for k,v in self.config.items() if v.get("advanced", False)}
+        
+        # --- STANDARD SECTION ---
+        if standard_params:
+            self._build_section("General Adjustments", standard_params)
+            
+        # --- ADVANCED SECTION ---
+        if advanced_params:
+            ctk.CTkFrame(self.scroll, height=2, fg_color="gray").pack(fill="x", pady=20)
+            self._build_section("Advanced Configuration", advanced_params)
+
+    def _build_section(self, title, params):
+        ctk.CTkLabel(self.scroll, text=title, font=("Roboto", 16, "bold"), text_color="#3B8ED0").pack(anchor="w", pady=(10, 10))
+        
+        for key, meta in params.items():
+            # Container for the row
+            row = ctk.CTkFrame(self.scroll, fg_color="transparent")
+            row.pack(fill="x", pady=5)
+            
+            # Label
+            ctk.CTkLabel(row, text=meta["label"], width=150, anchor="w").pack(side="left")
+            
+            # Question Mark / Help
+            help_btn = ctk.CTkButton(row, text="?", width=25, height=25, corner_radius=12,
+                                   fg_color="transparent", border_width=1, border_color="gray",
+                                   text_color="gray", hover_color="#444444")
+            help_btn.pack(side="left", padx=(5, 15))
+            
+            # Bind tooltip to the help button
+            self._bind_tooltip(help_btn, meta["desc"])
+
+            # Input Widget (Slider or Switch)
+            current_val = getattr(self.engine, key)
+            
+            if meta["type"] == "float" or meta["type"] == "int":
+                slider = ctk.CTkSlider(row, from_=meta["min"], to=meta["max"], 
+                                     number_of_steps=int((meta["max"]-meta["min"])/meta["step"]))
+                slider.set(current_val)
+                slider.pack(side="left", fill="x", expand=True)
+                
+                # Value Display
+                val_lbl = ctk.CTkLabel(row, text=str(round(current_val, 2)), width=40)
+                val_lbl.pack(side="right", padx=5)
+                
+                # Update Command
+                slider.configure(command=lambda v, k=key, l=val_lbl: self._on_update(k, v, l))
+                
+    def _on_update(self, key, value, label_widget):
+        # Update Label
+        label_widget.configure(text=str(round(value, 2)))
+        # Update Engine
+        if hasattr(self.engine, "update_parameter"):
+            self.engine.update_parameter(key, value)
+
+    def _bind_tooltip(self, widget, text):
+        def on_enter(e):
+            if not hasattr(self, "tooltip_win") or not self.tooltip_win.winfo_exists():
+                self.tooltip_win = ToolTip(self, text)
+            self.tooltip_win.show(e.x_root, e.y_root)
+            
+        def on_leave(e):
+            if hasattr(self, "tooltip_win") and self.tooltip_win.winfo_exists():
+                self.tooltip_win.hide()
+                
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Leave>", on_leave)
+
 class SplashScreen(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
@@ -70,6 +182,14 @@ class ThirdEyeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         
+        # State Management
+        self.active_model_name = None  # None means raw feed
+        self.available_cameras = {}    # { "Camera 0": 0, ... }
+        self.selected_camera_idx = 0
+        self.latest_frame_image = None # Thread-safe frame transfer
+        
+        # Engine Registry for Tuning
+        self.engines = {}
         # 1. Hide Main Window Initially
         self.withdraw()
         
@@ -104,6 +224,7 @@ class ThirdEyeApp(ctk.CTk):
 
     def _load_resources(self):
         """Loads heavy libraries and assets while updating splash screen."""
+        
         try:
             # -- STAGE 1: Security Core --
             self.splash.update_progress(0.1, "Verifying Hardware ID...")
@@ -126,11 +247,16 @@ class ThirdEyeApp(ctk.CTk):
             from recognition_engine import FaceEngine
             # Initialize engine once here to avoid lag later
             self.face_engine = FaceEngine(db_path="assets/known_faces")
+            self.engines["Face Verify"] = self.face_engine
+
+            self.splash.update_progress(0.55, "Waking Up The Robots...")
+            time.sleep(0.8)
             
             self.splash.update_progress(0.6, "Arming Sentry Mode...")
             global SentryEngine
             from sentry_engine import SentryEngine
             self.sentry_engine = SentryEngine()
+            self.engines["Sentry Mode"] = self.sentry_engine
 
             # -- STAGE 3: UI Assets --
             self.splash.update_progress(0.8, "Loading Interface Assets...")
@@ -346,14 +472,24 @@ class ThirdEyeApp(ctk.CTk):
         description = ctk.CTkLabel(card, text=desc, text_color="gray")
         description.pack(anchor="center", pady=(0, 10))
 
+        # Button Container
+        btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+        btn_frame.pack(pady=(0, 20))
+
         # Activate Button
         is_active = (self.active_model_name == name)
-        btn_text = "Active" if is_active else "Activate Model"
+        btn_text = "Active" if is_active else "Activate"
         btn_color = "green" if is_active else ["#3B8ED0", "#1F6AA5"]
         
-        btn = ctk.CTkButton(card, text=btn_text, fg_color=btn_color,
+        btn = ctk.CTkButton(btn_frame, text=btn_text, fg_color=btn_color, width=120,
                             command=lambda n=name: self._activate_and_switch(n))
-        btn.pack(pady=(0, 20))
+        btn.pack(side="left", padx=5)
+
+        # Tune Button
+        tune_btn = ctk.CTkButton(btn_frame, text="Tune", width=80, fg_color="transparent", 
+                               border_width=2, border_color="gray",
+                               command=lambda n=name: self._open_tuner(n))
+        tune_btn.pack(side="left", padx=5)
 
         # --- FIX: Recursively bind mouse wheel to all card elements ---
         def bind_scroll(widget):
@@ -361,9 +497,17 @@ class ThirdEyeApp(ctk.CTk):
             widget.bind("<Button-4>", self._on_mouse_wheel)    # Linux Up
             widget.bind("<Button-5>", self._on_mouse_wheel)    # Linux Down
             
-        for widget in [card, img_label, title, description]:
+        for widget in [card, img_label, title, description, btn_frame]:
             bind_scroll(widget)
 
+    def _open_tuner(self, model_name):
+        engine = self.engines.get(model_name)
+        if engine:
+            tuner = ModelTuner(self, model_name, engine)
+        else:
+            # Fallback for models not yet loaded/implemented
+            tuner = ModelTuner(self, model_name, None)
+            
     def _activate_and_switch(self, model_name):
         self.active_model_name = model_name
         self.show_live_vision()
