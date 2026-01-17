@@ -25,6 +25,19 @@ class SentryEngine:
         self.input_shape = (416, 416) 
         self.classes = ["person"] # We only care about Index 0 (Person) from COCO dataset
 
+        # [FIX] Pre-compute grids for decoding raw YOLOX outputs
+        self.grids = []
+        self.strides = []
+        for stride in [8, 16, 32]:
+            h, w = self.input_shape[0] // stride, self.input_shape[1] // stride
+            xv, yv = np.meshgrid(np.arange(w), np.arange(h))
+            grid = np.stack((xv, yv), 2).reshape(1, -1, 2)
+            self.grids.append(grid)
+            self.strides.append(np.full((1, grid.shape[1], 1), stride))
+            
+        self.grid_coords = np.concatenate(self.grids, axis=1)[0]
+        self.grid_strides = np.concatenate(self.strides, axis=1)[0]
+
     def process_frame(self, frame):
         """
         Inference Pipeline: Preprocess -> AI Model -> Postprocess -> NMS
@@ -71,6 +84,11 @@ class SentryEngine:
         boxes = []
         scores = []
         
+        # [FIX] Decode YOLOX raw outputs: (offset + grid) * stride
+        if predictions.shape[0] == self.grid_coords.shape[0]:
+            predictions[:, :2] = (predictions[:, :2] + self.grid_coords) * self.grid_strides
+            predictions[:, 2:4] = np.exp(predictions[:, 2:4]) * self.grid_strides
+
         # YOLOX Output: [x_center, y_center, width, height, obj_conf, class_conf...]
         # We only look at class_index 0 (Person) which is index 5 in the array
         
@@ -91,13 +109,7 @@ class SentryEngine:
         for i, pred in enumerate(valid_preds):
             x_c, y_c, w, h = pred[:4]
             
-            # [FIX] Scale normalized coordinates (0-1) to input resolution (416)
-            x_c *= self.input_shape[1]
-            y_c *= self.input_shape[0]
-            w *= self.input_shape[1]
-            h *= self.input_shape[0]
-            
-            # Undo letterbox scaling
+            # Undo letterbox scaling (Coordinates are now in absolute 416x416 pixels)
             x_c /= scale
             y_c /= scale
             w /= scale
@@ -113,7 +125,6 @@ class SentryEngine:
             scores.append(float(valid_scores[i]))
             
         return boxes, scores
-
     def _nms(self, boxes, scores, iou_thresh):
         if not boxes: return [], []
         
