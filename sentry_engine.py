@@ -23,10 +23,14 @@ class SentryEngine:
         
         self.input_shape = (416, 416) 
         
-        # [FIX] Removed all Animals. Only Class 0 (Person) remains.
         self.class_mapping = {
             0: "Person"
         }
+
+        # --- TUNABLE PARAMETERS (Default Values) ---
+        self.conf_thresh = 0.60  # "Sweet spot"
+        self.nms_thresh = 0.45   # Overlap threshold
+        self.score_thresh = 0.3  # Low level cutoff
 
         # Pre-compute grids for decoding raw YOLOX outputs
         self.grids = []
@@ -50,17 +54,50 @@ class SentryEngine:
         # Run AI Inference
         outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})[0]
         
-        # [TUNED] Confidence 0.60 is the "Sweet Spot" for people.
-        # Too low (0.45) = detects shadows/hands. 
-        # Too high (0.75) = misses people further away.
-        boxes, scores, class_ids = self._postprocess(outputs, ratio, conf_thresh=0.60)
+        # Use instance variables instead of hardcoded values
+        boxes, scores, class_ids = self._postprocess(outputs, ratio, conf_thresh=self.conf_thresh)
         
-        # [TUNED] NMS Threshold at 0.45 prevents "double boxing" the same person
-        final_boxes, final_scores, final_class_ids = self._nms(boxes, scores, class_ids, iou_thresh=0.45)
+        # Use instance variable for NMS
+        final_boxes, final_scores, final_class_ids = self._nms(boxes, scores, class_ids, iou_thresh=self.nms_thresh)
         
         final_labels = [self.class_mapping.get(cid, "Unknown") for cid in final_class_ids]
         
         return list(zip(final_boxes, final_scores, final_labels))
+    
+    def get_tunable_config(self):
+        """
+        Returns the schema for the UI Model Tuner.
+        Format: { internal_var: { label, desc, type, min, max, advanced } }
+        """
+        return {
+            "conf_thresh": {
+                "label": "Detection Sensitivity",
+                "desc": "How sure the AI needs to be to flag a person. Higher values reduce false alarms but might miss people in the dark.",
+                "type": "float",
+                "min": 0.1, "max": 0.95, "step": 0.05,
+                "advanced": False
+            },
+            "nms_thresh": {
+                "label": "Crowd Separation",
+                "desc": "Controls how the AI handles overlapping people. Lower values are better for dense crowds but might count one person twice.",
+                "type": "float",
+                "min": 0.1, "max": 1.0, "step": 0.05,
+                "advanced": True
+            },
+            "score_thresh": {
+                "label": "Pre-Filter Noise Gate",
+                "desc": "The absolute minimum signal strength required to even consider an object. Keep low for maximum recall.",
+                "type": "float",
+                "min": 0.1, "max": 0.6, "step": 0.05,
+                "advanced": True
+            }
+        }
+
+    def update_parameter(self, key, value):
+        """Updates a parameter dynamically."""
+        if hasattr(self, key):
+            setattr(self, key, value)
+            print(f"[SentryEngine] Updated {key} to {value}")
 
     def _preprocess(self, img):
         h, w = img.shape[:2]
@@ -124,7 +161,8 @@ class SentryEngine:
 
     def _nms(self, boxes, scores, class_ids, iou_thresh):
         if not boxes: return [], [], []
-        indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=0.3, nms_threshold=iou_thresh)
+        # Use instance variable score_thresh
+        indices = cv2.dnn.NMSBoxes(boxes, scores, score_threshold=self.score_thresh, nms_threshold=iou_thresh)
         if len(indices) > 0:
             final_boxes = [boxes[i] for i in indices.flatten()]
             final_scores = [scores[i] for i in indices.flatten()]
