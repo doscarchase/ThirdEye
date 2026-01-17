@@ -146,19 +146,20 @@ class ThirdEyeApp(ctk.CTk):
             self.destroy()
 
     def _scan_cameras(self):
-        """Detect available cameras and map them to real names."""
+        """Map available cameras to indices."""
         self.available_cameras = {}
-        
-        # 1. Get real names from OS
         real_names = self._get_platform_camera_names()
         
-        # 2. Check OpenCV indices (0-5)
-        for i in range(6):
-            cap = cv2.VideoCapture(i)
+        # Check first 10 indices
+        for i in range(10):
+            # Enforce DirectShow on Windows to match pygrabber's list order
+            backend = cv2.CAP_DSHOW if os.name == 'nt' else cv2.CAP_ANY
+            cap = cv2.VideoCapture(i, backend)
+            
             if cap.isOpened():
                 ret, _ = cap.read()
                 if ret:
-                    # Try to match index to a real name
+                    # If we have a name at this index, use it
                     if i < len(real_names):
                         display_name = f"{real_names[i]} ({i})"
                     else:
@@ -166,11 +167,7 @@ class ThirdEyeApp(ctk.CTk):
                         
                     self.available_cameras[display_name] = i
                 cap.release()
-            else:
-                # If we hit a closed index and we already found some, we can usually stop 
-                # (though some setups have gaps, checking up to 5 is safe)
-                pass
-
+            
         if not self.available_cameras:
             self.available_cameras["No Camera Found"] = -1
 
@@ -244,10 +241,10 @@ class ThirdEyeApp(ctk.CTk):
         self.scroll.grid_columnconfigure(0, weight=1)
         self.scroll.grid_columnconfigure(1, weight=1)
         
-        # Mouse Wheel Scrolling Binding
-        self.scroll.bind_all("<MouseWheel>", self._on_mouse_wheel)  # Windows
-        self.scroll.bind_all("<Button-4>", self._on_mouse_wheel)    # Linux Up
-        self.scroll.bind_all("<Button-5>", self._on_mouse_wheel)    # Linux Down
+        # --- SCROLL FIX: Bind Global MouseWheel ONLY when hovering the frame ---
+        # This captures the wheel event even if hovering over buttons or images
+        self.scroll.bind("<Enter>", lambda e: self._bind_mouse_wheel())
+        self.scroll.bind("<Leave>", lambda e: self._unbind_mouse_wheel())
 
         models = [
             ("Sentry Mode", "Perimeter human detection.", "assets/img_sentry.png"),
@@ -264,6 +261,16 @@ class ThirdEyeApp(ctk.CTk):
         
         for i, (name, desc, img_path) in enumerate(models):
             self._create_grid_card(self.scroll, name, desc, img_path, i // 2, i % 2)
+    # Helper methods for the scroll fix
+    def _bind_mouse_wheel(self):
+        self.bind_all("<MouseWheel>", self._on_mouse_wheel)  # Windows
+        self.bind_all("<Button-4>", self._on_mouse_wheel)    # Linux Up
+        self.bind_all("<Button-5>", self._on_mouse_wheel)    # Linux Down
+
+    def _unbind_mouse_wheel(self):
+        self.unbind_all("<MouseWheel>")
+        self.unbind_all("<Button-4>")
+        self.unbind_all("<Button-5>")
 
     def _on_mouse_wheel(self, event):
         try:
@@ -277,31 +284,40 @@ class ThirdEyeApp(ctk.CTk):
         except Exception:
             pass
     def _get_platform_camera_names(self):
-        """Attempts to fetch real camera names using OS commands."""
+        """Fetches real camera names using pygrabber (Win) or v4l2 (Linux)."""
         names = []
-        import subprocess
         
-        try:
-            if os.name == 'nt': # Windows
-                # Use PowerShell to get PnP devices that look like cameras
+        # Windows: Use pygrabber (DirectShow)
+        if os.name == 'nt':
+            try:
+                from pygrabber.dshow_graph import FilterGraph
+                graph = FilterGraph()
+                names = graph.get_input_devices()
+            except ImportError:
+                print("Tip: Install 'pygrabber' for real camera names on Windows.")
+                # Fallback to PowerShell if pygrabber is missing
+                import subprocess
                 cmd = "Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPClass -eq 'Image' -or $_.PNPClass -eq 'Camera' } | Select-Object -ExpandProperty Caption"
-                result = subprocess.run(["powershell", "-Command", cmd], capture_output=True, text=True)
-                if result.returncode == 0:
-                    names = [line.strip() for line in result.stdout.split('\n') if line.strip()]
-                    
-            elif sys.platform.startswith("linux"): # Linux
-                # Check /sys/class/video4linux
+                try:
+                    result = subprocess.run(["powershell", "-Command", cmd], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        names = [line.strip() for line in result.stdout.split('\n') if line.strip()]
+                except: pass
+
+        # Linux: Use /sys/class/video4linux
+        elif sys.platform.startswith("linux"):
+            try:
                 v4l_path = Path("/sys/class/video4linux")
                 if v4l_path.exists():
-                    # Sort by name (video0, video1...) to match OpenCV indices
+                    # Sort by logical index (video0, video1...)
                     video_devs = sorted([p for p in v4l_path.iterdir() if p.name.startswith("video")], 
                                       key=lambda x: int(x.name.replace("video", "")))
                     for dev in video_devs:
                         name_file = dev / "name"
                         if name_file.exists():
                             names.append(name_file.read_text().strip())
-        except Exception as e:
-            print(f"Name fetch error: {e}")
+            except Exception as e:
+                print(f"Linux Camera Scan Error: {e}")
             
         return names
 
