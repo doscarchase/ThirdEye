@@ -21,9 +21,85 @@ class AutomationManager:
     def _ensure_plugin_dir(self):
         if not os.path.exists(PLUGIN_DIR):
             os.makedirs(PLUGIN_DIR)
-            # Create a basic readme or init if needed
-            with open(os.path.join(PLUGIN_DIR, "__init__.py"), "w") as f:
+        
+        # Ensure __init__.py exists
+        init_path = os.path.join(PLUGIN_DIR, "__init__.py")
+        if not os.path.exists(init_path):
+            with open(init_path, "w") as f:
                 f.write("")
+
+        # Define Default Plugins content
+        # We use inspect.cleandoc ensures indentation is removed regardless of how you copy/paste
+        defaults = {
+            "visual_flash.py": r'''
+                """
+                Simulates a visual flash (Argument: 'color=red' or 'color=white')
+                """
+                def run(context, args):
+                    color = "white"
+                    if "red" in args: color = "red"
+                    print(f"[SCRIPT] VISUAL FLASH ACTIVATED: {color.upper()}")
+                ''',
+            "system_alert.py": r'''
+                """
+                Plays a system beep and prints a message.
+                """
+                import os
+
+                def run(context, args):
+                    print(f"[SCRIPT] System Alert Triggered by {context.get('identity')}!")
+                    if os.name == 'nt':
+                        import winsound
+                        winsound.Beep(1000, 500)
+                    else:
+                        print("\a")
+                ''',
+            "camera_snapshot.py": r'''
+                """
+                Saves the current frame to the 'snapshots' directory.
+                Argument: 'prefix=my_name' (optional)
+                """
+                import cv2
+                import os
+                import time
+
+                def run(context, args):
+                    frame = context.get("frame")
+                    if frame is None:
+                        print("[SNAPSHOT] Error: No frame data in context.")
+                        return
+
+                    # Parse args for custom prefix
+                    prefix = "snapshot"
+                    if "prefix=" in args:
+                        parts = args.split("prefix=")
+                        if len(parts) > 1:
+                            prefix = parts[1].split(" ")[0]
+
+                    save_dir = "snapshots"
+                    if not os.path.exists(save_dir):
+                        os.makedirs(save_dir)
+                        
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    filename = f"{prefix}_{timestamp}.jpg"
+                    filepath = os.path.join(save_dir, filename)
+                    
+                    try:
+                        cv2.imwrite(filepath, frame)
+                        print(f"[SNAPSHOT] Saved: {filepath}")
+                    except Exception as e:
+                        print(f"[SNAPSHOT] Save failed: {e}")
+                '''
+        }
+
+        # Create defaults if they don't exist
+        for filename, content in defaults.items():
+            path = os.path.join(PLUGIN_DIR, filename)
+            if not os.path.exists(path):
+                with open(path, "w") as f:
+                    # inspect.cleandoc fixes the indentation error
+                    f.write(inspect.cleandoc(content))
+                    print(f"Created default plugin: {filename}")
 
     def refresh_plugins(self):
         """Scans the plugins folder for python scripts with a 'run' function."""
