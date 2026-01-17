@@ -13,6 +13,7 @@ import threading
 import time
 import os
 import sys
+import json
 from pathlib import Path
 from PIL import Image, ImageTk
 import importlib
@@ -33,16 +34,26 @@ class ToolTip(ctk.CTkToplevel):
         super().__init__(parent)
         self.withdraw()
         self.overrideredirect(True)
-        self.label = ctk.CTkLabel(self, text=text, fg_color="#333333", corner_radius=6, padx=10, pady=5)
+        
+        # Style the label
+        self.label = ctk.CTkLabel(self, text=text, fg_color="#333333", 
+                                  corner_radius=6, padx=10, pady=5)
         self.label.pack()
         
     def show(self, x, y):
+        # Position the tooltip
         self.geometry(f"+{x+20}+{y}")
+        
+        # 1. Show the window
         self.deiconify()
+        
+        # 2. FORCE it to be on top of everything else (including the Tuner)
+        # We re-apply this every time it shows to ensure it takes precedence
+        self.attributes("-topmost", True) 
+        self.lift()
         
     def hide(self):
         self.withdraw()
-
 class ModelTuner(ctk.CTkToplevel):
     def __init__(self, parent, model_name, engine_instance):
         super().__init__(parent)
@@ -54,20 +65,45 @@ class ModelTuner(ctk.CTkToplevel):
         # Make modal-like
         self.attributes("-topmost", True)
         
-        # Container
+        # 1. Initialize widget storage (Prevents "missing parameters" bug)
+        self.widget_refs = {}
+
+        # 2. Setup Config Directory
+        # Checks if folder exists, if not, creates it.
+        self.config_dir = os.path.join(SCRIPT_DIR, "user_configs", self.model_name)
+        if not os.path.exists(self.config_dir):
+            os.makedirs(self.config_dir, exist_ok=True)
+
+        # 3. Build Footer FIRST (so it packs to the bottom reliably)
+        self._build_footer()
+
+        # 4. Container for Parameters (Packs into remaining space)
         self.scroll = ctk.CTkScrollableFrame(self)
         self.scroll.pack(fill="both", expand=True, padx=20, pady=20)
         
         ctk.CTkLabel(self.scroll, text=f"Tuning: {model_name}", 
                     font=("Roboto", 20, "bold")).pack(pady=(0, 20), anchor="w")
 
-        # Get config from engine
+        # 5. Get config and Build UI
         if hasattr(self.engine, "get_tunable_config"):
             self.config = self.engine.get_tunable_config()
             self._build_ui()
         else:
             ctk.CTkLabel(self.scroll, text="This model does not support tuning yet.", 
                         text_color="gray").pack()
+
+    def _build_footer(self):
+        """Adds Save/Load buttons to the bottom of the Tuner."""
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(fill="x", side="bottom", padx=20, pady=(0, 20))
+        
+        # Save Button
+        ctk.CTkButton(footer, text="Save Preset", width=100, 
+                     command=self._open_save_popup).pack(side="right", padx=5)
+        
+        # Load Button
+        ctk.CTkButton(footer, text="Load Preset", width=100, fg_color="#555555",
+                     command=self._open_load_popup).pack(side="right", padx=5)
 
     def _build_ui(self):
         # Separate Standard and Advanced
@@ -118,6 +154,9 @@ class ModelTuner(ctk.CTkToplevel):
                 
                 # Update Command
                 slider.configure(command=lambda v, k=key, l=val_lbl: self._on_update(k, v, l))
+
+                # [FIX] Store reference for loading later
+                self.widget_refs[key] = (slider, val_lbl)
                 
     def _on_update(self, key, value, label_widget):
         # Update Label
@@ -130,6 +169,10 @@ class ModelTuner(ctk.CTkToplevel):
         def on_enter(e):
             if not hasattr(self, "tooltip_win") or not self.tooltip_win.winfo_exists():
                 self.tooltip_win = ToolTip(self, text)
+            else:
+                # <--- NEW: Update the text when reusing the existing window
+                self.tooltip_win.label.configure(text=text)
+            
             self.tooltip_win.show(e.x_root, e.y_root)
             
         def on_leave(e):
@@ -138,6 +181,92 @@ class ModelTuner(ctk.CTkToplevel):
                 
         widget.bind("<Enter>", on_enter)
         widget.bind("<Leave>", on_leave)
+
+    def _open_save_popup(self):
+        """Opens a custom dialog to name and save the config."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Save Configuration")
+        dialog.geometry("300x150")
+        dialog.attributes("-topmost", True) # Ensure it's above the Tuner
+        
+        ctk.CTkLabel(dialog, text="Enter Preset Name:").pack(pady=(20, 5))
+        entry = ctk.CTkEntry(dialog)
+        entry.pack(padx=20, fill="x")
+        
+        def _perform_save():
+            name = entry.get().strip()
+            if not name: return
+            
+            # Collect current values
+            data = {}
+            for key in self.config:
+                if hasattr(self.engine, key):
+                    data[key] = getattr(self.engine, key)
+            
+            # Save to JSON
+            filename = f"{name}.json"
+            filepath = os.path.join(self.config_dir, filename)
+            try:
+                with open(filepath, 'w') as f:
+                    json.dump(data, f, indent=4)
+                print(f"Saved to {filepath}")
+            except Exception as e:
+                print(f"Save failed: {e}")
+            dialog.destroy()
+            
+        ctk.CTkButton(dialog, text="Save", command=_perform_save).pack(pady=20)
+
+    def _open_load_popup(self):
+        """Opens a popup listing existing configs for this model."""
+        popup = ctk.CTkToplevel(self)
+        popup.title("Load Configuration")
+        popup.geometry("300x400")
+        popup.attributes("-topmost", True)
+        
+        ctk.CTkLabel(popup, text=f"Saved {self.model_name} Presets", 
+                    font=("Roboto", 16, "bold")).pack(pady=10)
+        
+        scroll = ctk.CTkScrollableFrame(popup)
+        scroll.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        if not os.path.exists(self.config_dir):
+            os.makedirs(self.config_dir)
+
+        # List files
+        files = [f for f in os.listdir(self.config_dir) if f.endswith(".json")]
+        if not files:
+            ctk.CTkLabel(scroll, text="No presets found.").pack(pady=20)
+            
+        for f in files:
+            name = f.replace(".json", "")
+            btn = ctk.CTkButton(scroll, text=name, fg_color="transparent", border_width=1,
+                              text_color=("black", "white"),
+                              command=lambda fn=f: [self._load_file(fn), popup.destroy()])
+            btn.pack(fill="x", pady=5)
+
+    def _load_file(self, filename):
+        """Loads values from file into Engine and updates UI."""
+        filepath = os.path.join(self.config_dir, filename)
+        if not os.path.exists(filepath): return
+        
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+                
+            for key, val in data.items():
+                # 1. Update Engine
+                if hasattr(self.engine, "update_parameter"):
+                    self.engine.update_parameter(key, val)
+                
+                # 2. Update UI Sliders
+                if key in self.widget_refs:
+                    slider, label = self.widget_refs[key]
+                    slider.set(val)
+                    label.configure(text=str(round(val, 2)))
+            print(f"Loaded config: {filename}")
+                    
+        except Exception as e:
+            print(f"Failed to load config: {e}")
 
 class SplashScreen(ctk.CTkToplevel):
     def __init__(self, parent):
