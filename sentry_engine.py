@@ -35,13 +35,15 @@ class SentryEngine:
         # Run AI Inference
         outputs = self.session.run(None, {self.session.get_inputs()[0].name: input_tensor})[0]
         
-        # Decode and Filter (Score Thresh 0.5 = 50% confidence)
-        boxes, scores = self._postprocess(outputs, ratio, conf_thresh=0.5)
+        # Decode and Filter 
+        # [TUNED] Increased conf_thresh to 0.65 to stop detecting random objects/motion
+        boxes, scores = self._postprocess(outputs, ratio, conf_thresh=0.65)
         
         # Clean up overlaps (Non-Maximum Suppression)
-        final_boxes, final_scores = self._nms(boxes, scores, iou_thresh=0.45)
+        # [TUNED] Lowered iou_thresh to 0.30 to ensure we only get a single square per person
+        final_boxes, final_scores = self._nms(boxes, scores, iou_thresh=0.30)
         
-        # Zip results together
+        # Zip results together so main.py can display scores
         return list(zip(final_boxes, final_scores))
 
     def _preprocess(self, img):
